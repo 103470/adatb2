@@ -76,6 +76,62 @@ BEGIN
         ELSE
             :NEW.konyveles_napja := TRUNC(:NEW.letrehozva);
         END IF;
-        
 END;
+
+CREATE OR REPLACE PROCEDURE tranzakcioVegrehajt(
+        p_nap DATE,
+        p_hibakod OUT NUMBER        
+)
+AS
+        v_nap DATE := TRUNC(NVL(p_nap, SYSDATE);
+        CURSOR c_tranz IS SELECT t.tranzakcio_id id,
+                                                            t.osszeg
+                                                            k.id k_id, te.id te_id
+                                                            k.aktiv k_aktiv
+                                                            te.aktiv te_aktiv
+                                                            te.egyenleg te_egyenleg
+                                            FROM tranzakciok t
+                                                INNER JOIN ugyfelszamla k
+                                                        ON t.kedvezmenyezett_szamla = k.id
+                                                INNER JOIN ugyfelszamla te
+                                                        ON t.terhelt_szamla = te.id
+                                            WHERE t.statusz IS NULL AND
+                                                            TRUNC(t.letrehozva) = v_nap;
+
+BEGIN
+        p_hibakod := 0;
+        
+        FOR v_record IN c_tranz LOOP
+                IF v_record.k_aktiv = 'I' OR v_record.te_aktiv = 'I' 
+                OR v_record.te_egyenleg < v_record.osszeg THEN
+                        UPDATE tranzakciok
+                        SET statusz := 'E'
+                        WHERE tranzakcio_id = v_record.id;
+                        p_hibakod := p_hibakod + SQL%ROWCOUNT;
+                        COMMIT;
+                    ELSE
+                            UPDATE ugyfelszamla
+                            SET egyenleg = egyenleg + v_record.oszeg
+                            WHERE id = v_record.k_id;
+                            p_hibakod := p_hibakod + SQL%ROWCOUNT;
+                            
+                            UPDATE ugyfelszamla
+                            SET egyenleg = egyenleg - v_record.oszeg
+                            WHERE id = v_record.te_id;
+                            p_hibakod := p_hibakod + SQL%ROWCOUNT;
+                            
+                            UPDATE tranzakciok
+                            SET statusz = 'B'
+                            WHERE tranzakcio_id = v_record.id;
+                            p_hibakod := p_hibakod + SQL%ROWCOUNT;
+                            
+                            COMMIT;
+        END LOOP;
+-- ha bármilyen hiba van,  akkor a kód -1    
+        EXCEPTION
+                -- others ág minden hibát elkap
+                WHEN OTHERS THEN p_hibakód := -1;
+END;
+        
+
         
