@@ -1,0 +1,81 @@
+CREATE TABLE tranzakciok(
+        tranzakcio_id CHAR(19) NOT NULL,
+        terhelt_szamla NUMBER(4, 0) NOT NULL,
+        kedvezmenyezett_szamla NUMBER(4, 0) NOT NULL,
+        osszeg NUMBER(10) NOT NULL,
+        letrehozva TIMESTAMP(3) DEFAULT SYSTIMESTAMP NOT NULL,
+        konyveles_napja DATE,
+        statusz CHAR(1)
+);
+
+ALTER TABLE tranzakciok ADD CONSTRAINT pk_tranzakciok PRIMARY KEY(tranzakcio_id);
+ALTER TABLE tranzakciok ADD CONSTRAINT fk_tranzakciok_terhelt FOREIGN KEY(terhelt_szamla)
+        REFERENCES ugyfelszamla(id);
+ALTER TABLE tranzakciok ADD CONSTRAINT fk_tranzakciok_kedv FOREIGN KEY(kedvezmenyezett_szamla)
+        REFERENCES ugyfelszamla(id);
+ALTER TABLE tranzakciok ADD CONSTRAINT Ck_tranzakciok_szamlak CHECK(
+        terhelt_szamla <> kedvezmenyezett_szamla);
+ALTER TABLE tranzakciok ADD CONSTRAINT CK_tranzakciok_osszeg CHECK(osszeg > 0);
+ALTER TABLE tranzakciok ADD CONSTRAINT CK_tranzakciok_statusz CHECK(
+        statusz IS NOT NULL OR statusz IN ('E', 'B'));
+        
+CREATE OR REPLACE FUNCTION getNextId(
+        p_szamla ugyfelszamla.id%TYPE,
+        p_erteknap DATE
+)
+RETURN tranzakciok.tranzakcio_id%TYPE
+AUTHID DEFINER AS
+        -- ha a paraméter null, akkor az akt. rendszerdátumot helyezem a változóba
+        v_erteknap DATE :=NVL(p_erteknap, SYSDATE);
+        p_resz1 VARCHAR2(100);
+        p_resz2 VARCHAR2(100);
+        p_resz3 VARCHAR3(100);
+        v_tranz_db NUMBER;
+BEGIN
+        -- az első rész a dátum megfelelően formázott verziója
+        p_resz1 := TO_CHAR(v_erteknap, 'YYYYMMDD');
+        -- a második rész a p_szamla formázott verziója
+        p_resz2 := TO_CHAR(p_szamla);
+        WHILE LENGTH(p_resz2) <> 4 LOOP
+                p_resz2 := '0' || p_resz2;
+        END LOOP;
+        -- a harmadik rész a tranzakció sorszáma az adott napon
+        SELECT COUNT(*) INTO v_tranz_db
+        FROM tranzakciok
+        WHERE TRUNC( letrehozva)  =  TRUNC(v_erteknap);
+        IF v_tranz_db = 99999 THEN
+                RAISE_APPLICATION_ERROR(-20001, 'Túl sok tranzakció!');
+        END IF;
+        
+        v_tranz_db := v_tranz_db + 1;
+        p_resz3 := TO_CHAR(v_tranz_db);
+        WHILE LENGTH(p_resz3) <> 5 LOOP
+                p_resz3 := '0' || p_resz3;
+        END LOOP;
+        --a visszaadott szöveg a három rész összefűzése - felhaszn.
+        RETURN p_resz1 || '-' || p_resz2 || '-' || p_resz3;
+END;
+
+CREATE OR REPLACE TRIGGER tfBefIns_tranzakciok
+BEFORE INSERT
+ON tranzakciok
+FOR EACH ROW
+DECLARE
+        v_nap_sz NUMBER;
+BEGIN
+        :NEW.letrehozva := NVL(:NEW.letrehozva, SYSTIMESTAMP);
+        :NEW.tranzakcio_id := getNextId(:NEW.terhelt_szamla, TRUNC(:NEW.letrehozva));
+        
+        :NEW.status := NULL;
+        
+        v_nap_sz := TO_CHAR(TO_CHAR(:NEW.letrehozva, 'D'));
+        IF v_nap_sz = 6 THEN
+            :NEW.konyveles_napja :=TRUNC(:NEW.letrehozva) +2;
+        ELSIF 
+             :NEW.konyveles_napja :=TRUNC(:NEW.letrehozva) +1;
+        ELSE
+            :NEW.konyveles_napja := TRUNC(:NEW.letrehozva);
+        END IF;
+        
+END;
+        
