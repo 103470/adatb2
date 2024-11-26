@@ -1,0 +1,124 @@
+CREATE TABLE tanulok (
+   id NUMBER(3,0) NOT NULL,
+   nev VARCHAR2(250) NOT NULL,
+   aktiv CHAR(1) NOT NULL,
+   atlag NUMBER(2,2) DEFAULT NULL
+);
+ALTER TABLE tanulok ADD CONSTRAINT PK_tanulok PRIMARY KEY (id);
+ALTER TABLE  tanulok ADD CONSTRAINT  CK_tanulok CHECK ( aktiv in ('A','I') );
+
+
+CREATE TABLE tantargyak (
+  id NUMBER(3,0) NOT NULL,
+  nev VARCHAR2(20) NOT NULL,
+  aktiv CHAR(1) NOT NULL
+);
+ALTER TABLE  tantargyak ADD CONSTRAINT PK_tantargyak PRIMARY KEY (id);
+ALTER TABLE  tantargyak ADD CONSTRAINT CK_tantargyak CHECK ( aktiv IN ('A','I'));
+
+CREATE TABLE erdemjegyek (
+    id CHAR(15) NOT NULL,
+    tanulo NUMBER(3,0) NOT NULL,
+    tantargy NUMBER(3,0) NOT NULL,
+    erdemjegy NUMBER(1,0) NOT NULL,
+    letrehozva DATE DEFAULT SYSDATE NOT NULL,
+    tipus CHAR(1)
+);
+
+ALTER TABLE erdemjegyek ADD CONSTRAINT PK_erdemjegyek PRIMARY KEY (id);
+ALTER TABLE erdemjegyek ADD CONSTRAINT FK_erdemjegy_tanulo FOREIGN KEY (tanulo) REFERENCES tanulok(id);
+ALTER TABLE erdemjegyek ADD CONSTRAINT FK_erdemjegy_tantargy FOREIGN KEY (tantargy) REFERENCES tantargyak(id);
+ALTER TABLE erdemjegyek ADD CONSTRAINT UN_erdemjegy_letrehozva UNIQUE (letrehozva);
+ALTER TABLE erdemjegyek ADD CONSTRAINT CK_erdemjegy_jegy CHECK ( erdemjegy IN (1,2,3,4,5 ));
+ALTER TABLE erdemjegyek ADD CONSTRAINT CK_erdemjegy_tipus CHECK ( tipus IN ('É','T', 'F') OR tipus IS NULL);
+
+CREATE OR REPLACE FUNCTION getNextId (p_tanulo TANULOK.id%TYPE) RETURN CHAR
+AS
+v_mai CHAR(6);
+V_tanulo_id TANULOK.ID%TYPE := p_tanulo;
+v_sorszam NUMBER(4,0) := 0;
+v_azon CHAR(15);
+BEGIN
+v_mai := TO_CHAR(SYSDATE,'YYMMDD');
+SELECT NVL(MAX(SUBSTR(id,-4)),0)+1 INTO v_sorszam FROM ERDEMJEGYEK WHERE TO_CHAR(LETREHOZVA,'YYMMDD') = v_mai;
+ IF v_sorszam > 9999 THEN
+        RAISE_APPLICATION_ERROR(-20001, 'A napi azonosítók túllépték a 9999-es határt.');
+    END IF;
+v_azon:=v_mai ||'-'||RPAD(V_tanulo_id,3,*)||'-'||RPAD(v_sorszam,4,*);
+RETURN v_azon;
+END;
+
+
+CREATE OR REPLACE TRIGGER TR_BESZURAS
+    BEFORE INSERT OR UPDATE
+    ON ERDEMJEGYEK
+    FOR EACH ROW
+DECLARE
+v_aktiv_tanulo CHAR(1);
+v_aktiv_tantargy CHAR(1);
+BEGIN
+IF INSERTING THEN
+   :NEW.ID := GETNEXTID(:NEW.TANULO);
+END IF;
+ SELECT aktiv INTO v_aktiv_tanulo FROM tanulok WHERE id = :NEW.tanulo;
+    IF v_aktiv_tanulo != 'A' THEN
+        RAISE_APPLICATION_ERROR(-20002, 'A tanuló inaktív!');
+    END IF;
+
+    SELECT aktiv INTO v_aktiv_tantargy FROM tantargyak WHERE id = :NEW.tantargy;
+    IF v_aktiv_tantargy != 'A' THEN
+        RAISE_APPLICATION_ERROR(-20003, 'A tantárgy inaktív!');
+    END IF;
+
+
+    IF :NEW.letrehozva > SYSDATE THEN
+        RAISE_APPLICATION_ERROR(-20004, 'Nem lehet jövőbeli dátumot megadni!');
+    END IF;
+END;
+
+CREATE OR REPLACE PROCEDURE atlagKiszamit (p_tanulo TANULOK.ID%type, p_vege_nap DATE, p_rekord_db OUT NUMBER  )
+AS
+v_eredmeny NUMBER;
+v_aktiv CHAR(1);
+v_tanulo TANULOK.ID%TYPE := p_tanulo;
+v_vege_nap DATE := p_vege_nap;
+v_suly NUMBER := 0;
+v_osszeg NUMBER:= 0;
+BEGIN
+SELECT aktiv INTO v_aktiv FROM tanulok WHERE id = v_tanulo;
+    IF v_aktiv != 'A' THEN
+        UPDATE tanulok SET atlag = -1 WHERE id = v_tanulo;
+        RAISE_APPLICATION_ERROR(-20005, 'A tanuló inaktív!');
+    END IF;
+
+
+    FOR rec IN (
+        SELECT erdemjegy, tipus
+        FROM erdemjegyek
+        WHERE tanulo = v_tanulo AND
+              (v_vege_nap IS NULL OR letrehozva <= v_vege_nap)
+    ) LOOP
+        IF rec.tipus IS NULL OR rec.tipus = 'F' THEN
+            v_osszeg := v_osszeg + rec.erdemjegy;
+            v_suly := v_suly + 1;
+        ELSE
+            v_osszeg := v_osszeg + (rec.erdemjegy * 2);
+            v_suly := v_suly + 2;
+        END IF;
+    END LOOP;
+
+
+    IF v_suly > 0 THEN
+        v_eredmeny := ROUND(v_osszeg / v_suly, 2);
+    ELSE
+        v_eredmeny := NULL;
+    END IF;
+
+
+    UPDATE tanulok SET atlag = v_eredmeny WHERE id = v_tanulo;
+
+    SELECT COUNT(*) INTO p_rekord_db
+    FROM erdemjegyek
+    WHERE tanulo = v_tanulo AND
+          (v_vege_nap IS NULL OR letrehozva <= v_vege_nap);
+END;
