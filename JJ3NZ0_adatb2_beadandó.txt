@@ -1,0 +1,108 @@
+
+--1.feladat
+CREATE TABLE erdemjegyek (
+    id CHAR(15) NOT NULL,
+    tanulo NUMBER(3,0) NOT NULL,
+    tantargy NUMBER(3,0) NOT NULL,
+    erdemjegy NUMBER(1,0) NOT NULL CHECK (erdemjegy BETWEEN 1 AND 5),
+    letrehozva TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL UNIQUE,
+    tipus CHAR(1) CHECK (tipus IN ('É', 'T', 'F')),
+    PRIMARY KEY (id),
+    CONSTRAINT fk_tanulo FOREIGN KEY (tanulo) REFERENCES tanulok(id),
+    CONSTRAINT fk_tantargy FOREIGN KEY (tantargy) REFERENCES tantargyak(id)
+);
+
+
+--2.feladat
+CREATE OR REPLACE FUNCTION getNextId(tanulo_id NUMBER) RETURN CHAR IS
+    datum_part CHAR(6);
+    tanulo_part CHAR(3);
+    sorszam_part CHAR(4);
+    napi_sorszam NUMBER;
+BEGIN
+    SELECT TO_CHAR(SYSDATE, 'YYMMDD') INTO datum_part FROM DUAL;
+
+    tanulo_part := LPAD(tanulo_id, 3, '*');
+
+    SELECT COUNT(*) + 1 INTO napi_sorszam
+    FROM erdemjegyek
+    WHERE TRUNC(letrehozva) = TRUNC(SYSDATE);
+
+    IF napi_sorszam > 9999 THEN
+        RAISE_APPLICATION_ERROR(-20001, 'A napi érdemjegyek száma elérte a maximumot.');
+    END IF;
+
+    sorszam_part := LPAD(napi_sorszam, 4, '*');
+
+    RETURN datum_part || '-' || tanulo_part || '-' || sorszam_part;
+END;
+
+
+--3.feladat
+CREATE OR REPLACE TRIGGER trg_erdemjegyek_insert
+BEFORE INSERT OR UPDATE ON erdemjegyek
+FOR EACH ROW
+DECLARE
+    tanulo_aktiv CHAR(1);
+    tantargy_aktiv CHAR(1);
+BEGIN
+    IF INSERTING THEN
+        :NEW.id := getNextId(:NEW.tanulo);
+    END IF;
+
+    SELECT aktiv INTO tanulo_aktiv FROM tanulok WHERE id = :NEW.tanulo;
+    IF tanulo_aktiv != 'A' THEN
+        RAISE_APPLICATION_ERROR(-20002, 'A tanuló inaktív.');
+    END IF;
+
+    SELECT aktiv INTO tantargy_aktiv FROM tantargyak WHERE id = :NEW.tantargy;
+    IF tantargy_aktiv != 'A' THEN
+        RAISE_APPLICATION_ERROR(-20003, 'A tantárgy inaktív.');
+    END IF;
+
+    IF :NEW.letrehozva > SYSTIMESTAMP THEN
+        RAISE_APPLICATION_ERROR(-20004, 'A jövőbeli érdemjegy nem engedélyezett.');
+    END IF;
+END;
+
+
+--4.feladat
+CREATE OR REPLACE PROCEDURE atlagKiszamit(
+    tanulo IN NUMBER,
+    vege_nap IN DATE,
+    rekord_db OUT NUMBER
+) IS
+    osszes_pont NUMBER := 0;
+    osszes_suly NUMBER := 0;
+    jegy_pont NUMBER;
+    jegy_suly NUMBER;
+    aktiv CHAR(1);
+BEGIN
+    SELECT aktiv INTO aktiv FROM tanulok WHERE id = tanulo;
+    IF aktiv != 'A' THEN
+        UPDATE tanulok SET atlag = -1 WHERE id = tanulo;
+        RAISE_APPLICATION_ERROR(-20005, 'A tanuló inaktív.');
+    END IF;
+
+    FOR jegy IN (
+        SELECT erdemjegy, tipus
+        FROM erdemjegyek
+        WHERE tanulo = tanulo AND (vege_nap IS NULL OR letrehozva <= vege_nap)
+    ) LOOP
+        jegy_suly := CASE
+            WHEN jegy.tipus IS NULL OR jegy.tipus = 'F' THEN 1
+            ELSE 2
+        END;
+        jegy_pont := jegy.erdemjegy * jegy_suly;
+
+        osszes_pont := osszes_pont + jegy_pont;
+        osszes_suly := osszes_suly + jegy_suly;
+        rekord_db := rekord_db + 1;
+    END LOOP;
+
+    IF osszes_suly > 0 THEN
+        UPDATE tanulok SET atlag = ROUND(osszes_pont / osszes_suly, 2) WHERE id = tanulo;
+    ELSE
+        UPDATE tanulok SET atlag = NULL WHERE id = tanulo;
+    END IF;
+END;
